@@ -1,0 +1,2 @@
+load_from:
+  - python_file: dowloader_ETL_v2.py

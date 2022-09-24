@@ -1,12 +1,12 @@
 import sqlite3
-from typing import List
-from dagster import asset,repository,schedule,job,define_asset_job
-from dagster import MetadataValue,DefaultScheduleStatus,Output
+import time
+from dagster import asset,repository,schedule,define_asset_job,sensor
+from dagster import MetadataValue,DefaultScheduleStatus,Output,RunRequest,DefaultSensorStatus
 import pandas as pd 
 import requests as r
 import numpy as np
 from creds import (STEAM_API_KEY,
-                        GET_MATCH_HISTORY_BY_SEQ_NUM)
+                    GET_MATCH_HISTORY_BY_SEQ_NUM)
 
 
 
@@ -42,13 +42,13 @@ def get_response(context,load_last_step:int)->dict:
                 }
 
     pool_of_games = r.get(GET_MATCH_HISTORY_BY_SEQ_NUM,
-                        params=fetch_params)
+                            params=fetch_params)
 
     if pool_of_games.status_code == 200:
         load_last_step+= np.ceil(context.op_config['matches_requested'] * 1.2)
         return pool_of_games.json()
     else:
-        context.warning(f'{pool_of_games.status_code}')
+        context.log.warning(f'{pool_of_games.status_code} - {pool_of_games.text}')
             
 
 @asset(description='transform downloaded data',
@@ -95,10 +95,11 @@ def update_base(context,optimize_data:pd.DataFrame)->None:
 
 
 
+
     
 update_matrix_data_job = define_asset_job(name='update_dota_matches',
-                                        config={'ops':{"update_base": {"config": {"db_path": 'dota2base.db'}},
-                                                        "load_last_step": {"config": {"db_path": 'dota2base.db'}},
+                                        config={'ops':{"update_base": {"config": {"db_path": 'dotaIIbase.db'}},
+                                                        "load_last_step": {"config": {"db_path": 'dotaIIbase.db'}},
                                                         "get_response": {"config": {"matches_requested": 100}}},
                                                 })
 
@@ -112,21 +113,26 @@ def dota_ddos_schedule():
     return {}
 
 
-
+@sensor(job=update_matrix_data_job,
+        minimum_interval_seconds=5,
+        default_status=DefaultSensorStatus.RUNNING)
+def sensor_5_sec():
+    yield RunRequest(run_key=None, run_config={})
+    
 @repository
 def dota_picker():
     assets = [get_response,update_base,optimize_data,load_last_step]
-    schedules = [dota_ddos_schedule]
+    schedules = [dota_ddos_schedule,sensor_5_sec]
     jobs = [update_matrix_data_job]
     graphs = []
     return  assets  + jobs + schedules + graphs
 
 
-
 if __name__=='__main__':
     n=0
     while 1==1:
-        last_step = load_last_step()
+        time.sleep(2)
+        last_step = load_last_step(None)
         response = get_response(last_step)
         matrix_data = optimize_data(response)
         upd_db = update_base(matrix_data)

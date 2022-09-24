@@ -1,4 +1,0 @@
-load_from:
-  - python_file:
-      relative_path: data_source/dowloader_ETL.py
-      relative_path: data_source/dowloader_ETL_v2.py
