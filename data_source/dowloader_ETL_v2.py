@@ -1,7 +1,7 @@
 import sqlite3
 import time
-from dagster import asset,repository,schedule,define_asset_job,sensor
-from dagster import MetadataValue,DefaultScheduleStatus,Output,RunRequest,DefaultSensorStatus
+from dagster import asset,repository,define_asset_job,sensor
+from dagster import MetadataValue,Output,RunRequest,DefaultSensorStatus
 import pandas as pd 
 import requests as r
 import numpy as np
@@ -95,7 +95,6 @@ def update_base(context,optimize_data:pd.DataFrame)->None:
 
 
 
-
     
 update_matrix_data_job = define_asset_job(name='update_dota_matches',
                                         config={'ops':{"update_base": {"config": {"db_path": 'dotaIIbase.db'}},
@@ -104,25 +103,16 @@ update_matrix_data_job = define_asset_job(name='update_dota_matches',
                                                 })
 
 
-@schedule(job=update_matrix_data_job,
-            cron_schedule="* * * * *",
-            execution_timezone="Europe/Moscow",
-            default_status=DefaultScheduleStatus.RUNNING
-)
-def dota_ddos_schedule():
-    return {}
-
-
 @sensor(job=update_matrix_data_job,
         minimum_interval_seconds=5,
         default_status=DefaultSensorStatus.RUNNING)
 def sensor_5_sec():
-    yield RunRequest(run_key=None, run_config={})
+    yield RunRequest(run_key=None)
     
 @repository
 def dota_picker():
     assets = [get_response,update_base,optimize_data,load_last_step]
-    schedules = [dota_ddos_schedule,sensor_5_sec]
+    schedules = [sensor_5_sec]
     jobs = [update_matrix_data_job]
     graphs = []
     return  assets  + jobs + schedules + graphs
