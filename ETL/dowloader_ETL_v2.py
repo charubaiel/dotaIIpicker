@@ -68,7 +68,7 @@ def prepare_data(context,get_response:dict)->pd.DataFrame:
         )
 def optimize_data(context,prepare_data:pd.DataFrame)->pd.DataFrame:
 
-    match_table = pd.json_normalize(prepare_data['players'].explode('players')).drop('account_id',axis=1).dropna(axis=1).apply(pd.to_numeric,errors='coerce',downcast='unsigned').dropna(axis=1)
+    match_table = pd.json_normalize(prepare_data['players'].explode('players')).drop(['account_id','leaver_status'],axis=1).dropna(axis=1).apply(pd.to_numeric,errors='coerce',downcast='unsigned').dropna(axis=1)
     match_table[['radiant_win','match_id']] = prepare_data.explode('players')[['radiant_win','match_id']].values
     match_table = match_table.set_index('match_id')
 
@@ -95,7 +95,7 @@ def optimize_data(context,prepare_data:pd.DataFrame)->pd.DataFrame:
         config_schema={"db_path": str},
         group_name='save')
 def update_raw(context,prepare_data:pd.DataFrame):
-    result_exploded_data = pd.json_normalize(prepare_data['players'].explode('players')).drop('account_id',axis=1).dropna(axis=1).apply(pd.to_numeric,errors='coerce',downcast='unsigned').dropna(axis=1)
+    result_exploded_data = pd.json_normalize(prepare_data['players'].explode('players')).drop(['account_id','leaver_status'],axis=1).dropna(axis=1).apply(pd.to_numeric,errors='coerce',downcast='unsigned').dropna(axis=1)
     with sqlite3.connect(context.op_config['db_path']) as connect:
         result_exploded_data.to_sql('RAW_stats_table',if_exists='append',index=False,con=connect)
         ttl_rows = pd.read_sql('select count() from RAW_stats_table',con=connect).iloc[0,0]
