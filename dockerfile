@@ -7,7 +7,7 @@ RUN touch /opt/dagster/dagster_home/dagster.yaml
 
 WORKDIR /opt/dagster/app
 
-COPY ./data_source/creds.py ./data_source/dowloader_ETL_v2.py ./data_source/workspace.yaml /opt/dagster/app/
+COPY ./ETL/ /opt/dagster/app/
 COPY poetry.lock pyproject.toml /opt/dagster/app/
 
 RUN apt-get update
