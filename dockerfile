@@ -1,6 +1,8 @@
 FROM python:3.8-slim
 
 ENV DAGSTER_HOME=/opt/dagster/dagster_home/
+ENV STEAM_API_KEY='meh'
+ENV DAGSTER_PORT=3000
 
 RUN mkdir -p /opt/dagster/dagster_home /opt/dagster/app
 RUN touch /opt/dagster/dagster_home/dagster.yaml 
@@ -16,6 +18,5 @@ RUN pip install poetry
 RUN poetry config virtualenvs.create false \
     && poetry install --no-interaction --no-ansi
 
-EXPOSE 3000
 
-CMD ["/bin/bash","-c","dagit -h 0.0.0.0 -p 3000 & dagster-daemon run"]
+CMD ["/bin/bash","-c","dagit -h 0.0.0.0 -p ${DAGSTER_PORT} & dagster-daemon run"]

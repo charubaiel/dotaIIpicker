@@ -1,12 +1,19 @@
 import sqlite3
-from dagster import asset,repository,define_asset_job,sensor,schedule
-from dagster import MetadataValue,Output,RunRequest,DefaultSensorStatus,DefaultScheduleStatus
+from dagster import asset,repository,define_asset_job,sensor
+from dagster import MetadataValue,Output,RunRequest,DefaultSensorStatus
 import pandas as pd 
 import requests as r
 import numpy as np
 from creds import (STEAM_API_KEY,
                     GET_MATCH_HISTORY_BY_SEQ_NUM)
 
+
+
+GENERAL_MATCH_COLUMNS = ['player_slot', 'team_number', 'team_slot', 'hero_id', 'item_0',
+                        'item_1', 'item_2', 'item_3', 'item_4', 'item_5', 'backpack_0',
+                        'backpack_1', 'backpack_2', 'item_neutral', 'kills', 'deaths',
+                        'assists', 'last_hits', 'denies', 'gold_per_min', 'xp_per_min', 'level',
+                        'net_worth']
 
 
 @asset(description='load last seq',
@@ -21,7 +28,7 @@ def load_last_step(context):
             LAST_SEQ_STEP = int(metadata_.loc[0,'last_seq'])
             last_upd = int(metadata_.loc[0,'last_upd_date'])
     except:
-        LAST_SEQ_STEP = int(5.45e+9)
+        LAST_SEQ_STEP = int(5.6e+9)
         last_upd = 0
 
     return Output(LAST_SEQ_STEP, metadata={'last_updated_match_date':
@@ -68,7 +75,7 @@ def prepare_data(context,get_response:dict)->pd.DataFrame:
         )
 def optimize_data(context,prepare_data:pd.DataFrame)->pd.DataFrame:
 
-    match_table = pd.json_normalize(prepare_data['players'].explode('players')).drop(['account_id','leaver_status'],axis=1).dropna(axis=1).apply(pd.to_numeric,errors='coerce',downcast='unsigned').dropna(axis=1)
+    match_table = pd.json_normalize(prepare_data['players'].explode('players')).loc[:,GENERAL_MATCH_COLUMNS].dropna(axis=1).apply(pd.to_numeric,errors='coerce',downcast='unsigned').dropna(axis=1)
     match_table[['radiant_win','match_id']] = prepare_data.explode('players')[['radiant_win','match_id']].values
     match_table = match_table.set_index('match_id')
 
@@ -95,7 +102,7 @@ def optimize_data(context,prepare_data:pd.DataFrame)->pd.DataFrame:
         config_schema={"db_path": str},
         group_name='save')
 def update_raw(context,prepare_data:pd.DataFrame):
-    result_exploded_data = pd.json_normalize(prepare_data['players'].explode('players')).drop(['account_id','leaver_status'],axis=1).dropna(axis=1).apply(pd.to_numeric,errors='coerce',downcast='unsigned').dropna(axis=1)
+    result_exploded_data = pd.json_normalize(prepare_data['players'].explode('players')).loc[:,GENERAL_MATCH_COLUMNS].dropna(axis=1).apply(pd.to_numeric,errors='coerce',downcast='unsigned').dropna(axis=1)
     with sqlite3.connect(context.op_config['db_path']) as connect:
         result_exploded_data.to_sql('RAW_stats_table',if_exists='append',index=False,con=connect)
         ttl_rows = pd.read_sql('select count() from RAW_stats_table',con=connect).iloc[0,0]
@@ -132,14 +139,6 @@ update_matrix_data_job = define_asset_job(name='update_dota_matches',
                                         tags={"dagster/max_retries": 3, "dagster/retry_strategy": "ALL_STEPS"})
 
 
-@schedule(job=update_matrix_data_job,
-            cron_schedule="* * * * *",
-            execution_timezone="Europe/Moscow",
-            default_status=DefaultScheduleStatus.RUNNING
-)
-def dota_ddos_schedule():
-    return {}
-
 
 @sensor(job=update_matrix_data_job,
         minimum_interval_seconds=5,
@@ -160,10 +159,10 @@ def dota_picker():
                 update_optimized_base,
                 load_last_step]
 
-    schedules = [sensor_5_sec,dota_ddos_schedule]
+    schedules = [sensor_5_sec]
     jobs = [update_matrix_data_job]
-    graphs = []
-    return  assets  + jobs + schedules + graphs
+
+    return  assets  + jobs + schedules
 
 
 

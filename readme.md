@@ -18,7 +18,7 @@
 
 
 #  Запуск ETL процесса по выгрузке данных.  
-
+> by container
 ```
 docker build -t dotaetl .
 docker run \
@@ -27,5 +27,14 @@ docker run \
     -e STEAM_API_KEY=$STEAM_API_KEY \
     -v $PWD/ETL/dbs:/opt/dagster/app/dbs \
     -d dotaetl
+```
+
+> by compose    
+
+all params in .env
+
+```
+docker compose up -d
+
 ```
 Морда дагстера на  localhost:3000 

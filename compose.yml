@@ -1,0 +1,15 @@
+version: '3.10'
+
+services:
+  dota2etl:
+    build:
+      context: .
+      dockerfile: ./dockerfile
+    container_name: dota2etl
+    environment:
+        STEAM_API_KEY: ${STEAM_API_KEY}
+        DAGSTER_PORT: ${DAGSTER_PORT}
+    volumes:
+      - ./ETL/dbs:/opt/dagster/app/dbs
+    ports:
+      - "${DAGSTER_PORT}:${DAGSTER_PORT}"
