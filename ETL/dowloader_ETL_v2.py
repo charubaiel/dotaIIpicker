@@ -26,13 +26,13 @@ def load_last_step(context):
                                         max(start_time) as last_upd_date
                                         from INTEL_matrix_table''',con=c).astype(int)
             LAST_SEQ_STEP = int(metadata_.loc[0,'last_seq'])
-            last_upd = int(metadata_.loc[0,'last_upd_date'])
+            last_upd = metadata_.loc[0,'last_upd_date']
     except:
         LAST_SEQ_STEP = int(5.6e+9)
         last_upd = 0
 
     return Output(LAST_SEQ_STEP, metadata={'last_updated_match_date':
-                                            MetadataValue.text(str(pd.to_datetime(last_upd,unit='s')))})
+                                            MetadataValue.text(str(last_upd))})
 
 
 
@@ -66,8 +66,9 @@ def prepare_data(context,get_response:dict)->pd.DataFrame:
         .where(lambda x: x['human_players']==10)\
                 .query('lobby_type in (0,7) and game_mode in (23,22,19)')\
                     .dropna(axis=1)
+    data['start_time'] = pd.to_datetime(data['start_time'],unit='s').dt.date
 
-    return data
+    return data.apply(pd.to_numeric,errors='ignore',downcast='unsigned')
 
 
 @asset(description='pd.DataFrame --> win\lose matrix',
@@ -75,7 +76,7 @@ def prepare_data(context,get_response:dict)->pd.DataFrame:
         )
 def optimize_data(context,prepare_data:pd.DataFrame)->pd.DataFrame:
 
-    match_table = pd.json_normalize(prepare_data['players'].explode('players')).loc[:,GENERAL_MATCH_COLUMNS].dropna(axis=1).apply(pd.to_numeric,errors='coerce',downcast='unsigned').dropna(axis=1)
+    match_table = pd.json_normalize(prepare_data['players'].explode('players')).loc[:,GENERAL_MATCH_COLUMNS].dropna(axis=1)
     match_table[['radiant_win','match_id']] = prepare_data.explode('players')[['radiant_win','match_id']].values
     match_table = match_table.set_index('match_id')
 
@@ -92,7 +93,7 @@ def optimize_data(context,prepare_data:pd.DataFrame)->pd.DataFrame:
     long_type_matrix.columns = ['win_team','stats_type','lose_team','value']
 
     return long_type_matrix.assign(
-                                    start_time=prepare_data['start_time'].median(),
+                                    start_time=prepare_data['start_time'].max(),
                                     max_seq_num = prepare_data['match_seq_num'].max())
 
 
@@ -102,10 +103,10 @@ def optimize_data(context,prepare_data:pd.DataFrame)->pd.DataFrame:
         config_schema={"db_path": str},
         group_name='save')
 def update_raw(context,prepare_data:pd.DataFrame):
-    result_exploded_data = pd.json_normalize(prepare_data['players'].explode('players')).loc[:,GENERAL_MATCH_COLUMNS].dropna(axis=1).apply(pd.to_numeric,errors='coerce',downcast='unsigned').dropna(axis=1)
+    result_exploded_data = pd.json_normalize(prepare_data['players'].explode('players')).loc[:,GENERAL_MATCH_COLUMNS].dropna(axis=1)
     with sqlite3.connect(context.op_config['db_path']) as connect:
         result_exploded_data.to_sql('RAW_stats_table',if_exists='append',index=False,con=connect)
-        ttl_rows = pd.read_sql('select count() from RAW_stats_table',con=connect).iloc[0,0]
+        ttl_rows = pd.read_sql('select count() / 10 from RAW_stats_table',con=connect).iloc[0,0]
     return Output(None, metadata={'match_updated':
                                     MetadataValue.int(int(ttl_rows))})
 
@@ -118,6 +119,10 @@ def update_optimized_base(context,optimize_data):
 
     with sqlite3.connect(context.op_config['db_path']) as connect:
         optimize_data.to_sql('INTEL_matrix_table',if_exists='append',index=False,con=connect)
+
+        reset_data = pd.read_sql('select start_time,win_team,stats_type,lose_team,SUM(value) as value, max(max_seq_num) as max_seq_num from INTEL_matrix_table group by 1,2,3,4',con=connect)
+        reset_data.to_sql('INTEL_matrix_table',if_exists='replace',index=False,con=connect)
+
         total_data = pd.read_sql('select win_team,stats_type,lose_team,SUM(value) as stats from INTEL_matrix_table group by 1,2,3',con=connect)
         total_data.to_hdf(context.op_config['file_path'],key='matrix_table',mode='w',complevel=5,index=False)
 
@@ -141,7 +146,7 @@ update_matrix_data_job = define_asset_job(name='update_dota_matches',
 
 
 @sensor(job=update_matrix_data_job,
-        minimum_interval_seconds=5,
+        minimum_interval_seconds=6,
         default_status=DefaultSensorStatus.RUNNING)
 def sensor_5_sec():
     yield RunRequest(run_key=None, run_config={})
