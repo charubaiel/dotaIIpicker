@@ -6,6 +6,7 @@ services:
       context: .
       dockerfile: ./dockerfile
     container_name: dota2etl
+    restart: 'on-failure'
     environment:
         STEAM_API_KEY: ${STEAM_API_KEY}
         DAGSTER_PORT: ${DAGSTER_PORT}

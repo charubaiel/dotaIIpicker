@@ -12,8 +12,8 @@ from creds import (STEAM_API_KEY,
 GENERAL_MATCH_COLUMNS = ['player_slot', 'team_number', 'team_slot', 'hero_id', 'item_0',
                         'item_1', 'item_2', 'item_3', 'item_4', 'item_5', 'backpack_0',
                         'backpack_1', 'backpack_2', 'item_neutral', 'kills', 'deaths',
-                        'assists', 'last_hits', 'denies', 'gold_per_min', 'xp_per_min', 'level',
-                        'net_worth']
+                        'assists', 'last_hits', 'denies', 'gold_per_min', 'xp_per_min',
+                        'level', 'net_worth']
 
 
 @asset(description='load last seq',
@@ -24,7 +24,7 @@ def load_last_step(context):
         with sqlite3.connect(context.op_config['db_path']) as c:
             metadata_ = pd.read_sql('''select max(max_seq_num) as last_seq,
                                         max(start_time) as last_upd_date
-                                        from INTEL_matrix_table''',con=c).astype(int)
+                                        from INTEL_matrix_table''',con=c)
             LAST_SEQ_STEP = int(metadata_.loc[0,'last_seq'])
             last_upd = metadata_.loc[0,'last_upd_date']
     except:
@@ -57,6 +57,7 @@ def get_response(context,load_last_step:int)->dict:
         context.log.warning(f'{pool_of_games.status_code} - {pool_of_games.text}')
             
 
+
 @asset(description='raw json --> pd.DataFrame',
         group_name='transform'
         )
@@ -66,9 +67,23 @@ def prepare_data(context,get_response:dict)->pd.DataFrame:
         .where(lambda x: x['human_players']==10)\
                 .query('lobby_type in (0,7) and game_mode in (23,22,19)')\
                     .dropna(axis=1)
+
     data['start_time'] = pd.to_datetime(data['start_time'],unit='s').dt.date
 
-    return data.apply(pd.to_numeric,errors='ignore',downcast='unsigned')
+
+    exploded_df = data.explode(column= 'players' )
+
+    players_table = pd.json_normalize(exploded_df['players']).loc[:,GENERAL_MATCH_COLUMNS].dropna(axis=1)
+
+    match_table = pd.concat([exploded_df.drop('players',axis=1).reset_index(drop=True)
+                            ,players_table]
+                            ,axis=1
+                            )
+
+
+    return match_table.set_index('match_id').apply(pd.to_numeric,errors='ignore',downcast='unsigned')
+
+
 
 
 @asset(description='pd.DataFrame --> win\lose matrix',
@@ -76,11 +91,8 @@ def prepare_data(context,get_response:dict)->pd.DataFrame:
         )
 def optimize_data(context,prepare_data:pd.DataFrame)->pd.DataFrame:
 
-    match_table = pd.json_normalize(prepare_data['players'].explode('players')).loc[:,GENERAL_MATCH_COLUMNS].dropna(axis=1)
-    match_table[['radiant_win','match_id']] = prepare_data.explode('players')[['radiant_win','match_id']].values
-    match_table = match_table.set_index('match_id')
 
-    hero_matrix = match_table\
+    hero_matrix = prepare_data\
     .groupby(['match_id','team_number','radiant_win'])\
         .agg({'hero_id':set})\
             .unstack(1)\
@@ -100,15 +112,12 @@ def optimize_data(context,prepare_data:pd.DataFrame)->pd.DataFrame:
 
 
 @asset(description='update raw db data',
-        config_schema={"db_path": str},
+        config_schema={"file_path": str},
         group_name='save')
 def update_raw(context,prepare_data:pd.DataFrame):
-    result_exploded_data = pd.json_normalize(prepare_data['players'].explode('players')).loc[:,GENERAL_MATCH_COLUMNS].dropna(axis=1)
-    with sqlite3.connect(context.op_config['db_path']) as connect:
-        result_exploded_data.to_sql('RAW_stats_table',if_exists='append',index=False,con=connect)
-        ttl_rows = pd.read_sql('select count() / 10 from RAW_stats_table',con=connect).iloc[0,0]
-    return Output(None, metadata={'match_updated':
-                                    MetadataValue.int(int(ttl_rows))})
+    prepare_data.to_hdf(context.op_config['file_path'],key='raw',mode='a',complevel=9,index=False)
+    return Output(None, metadata={'uniq_heroes_matches':
+                                    MetadataValue.int(int(prepare_data['hero_id'].nunique()))})
 
 
 
@@ -120,23 +129,36 @@ def update_optimized_base(context,optimize_data):
     with sqlite3.connect(context.op_config['db_path']) as connect:
         optimize_data.to_sql('INTEL_matrix_table',if_exists='append',index=False,con=connect)
 
-        reset_data = pd.read_sql('select start_time,win_team,stats_type,lose_team,SUM(value) as value, max(max_seq_num) as max_seq_num from INTEL_matrix_table group by 1,2,3,4',con=connect)
+        reset_data = pd.read_sql('''select start_time,
+                                    win_team,
+                                    stats_type,
+                                    lose_team,
+                                    SUM(value) as value,
+                                    max(max_seq_num) as max_seq_num 
+                                    from INTEL_matrix_table
+                                    group by 1,2,3,4''',con=connect)
+
         reset_data.to_sql('INTEL_matrix_table',if_exists='replace',index=False,con=connect)
 
-        total_data = pd.read_sql('select win_team,stats_type,lose_team,SUM(value) as stats from INTEL_matrix_table group by 1,2,3',con=connect)
-        total_data.to_hdf(context.op_config['file_path'],key='matrix_table',mode='w',complevel=5,index=False)
+        total_data = pd.read_sql('''select
+                                win_team,
+                                stats_type,
+                                lose_team,
+                                SUM(value) as stats
+                                from INTEL_matrix_table
+                                group by 1,2,3''',con=connect)
 
     return Output(value=None,
                 metadata = {
                             'MatrixFileSize':MetadataValue.float(total_data.memory_usage(deep=True).sum() / 1024**2),
-                            'Min_matches':MetadataValue.float(optimize_data['value'].min()),
-                            'Max_matches':MetadataValue.float(optimize_data['value'].max()),
+                            'Min_matches':MetadataValue.float(total_data['stats'].where(lambda x: x!=0).min()),
+                            'Max_matches':MetadataValue.float(total_data['stats'].max()),
                             }
                 )
 
     
 update_matrix_data_job = define_asset_job(name='update_dota_matches',
-                                        config={'ops':{"update_raw": {"config": {"db_path": 'dbs/dotaIIbase.db'}},
+                                        config={'ops':{"update_raw": {"config": {'file_path':'dbs/raw.h5'}},
                                                         "update_optimized_base": {"config": {"db_path": 'dbs/dotaIIbase.db','file_path':'dbs/optimized_matrix.h5'}},
                                                         "load_last_step": {"config": {"db_path": 'dbs/dotaIIbase.db'}},
                                                         "get_response": {"config": {"matches_requested": 100}}},
@@ -150,8 +172,6 @@ update_matrix_data_job = define_asset_job(name='update_dota_matches',
         default_status=DefaultSensorStatus.RUNNING)
 def sensor_5_sec():
     yield RunRequest(run_key=None, run_config={})
-
-
 
 
     
