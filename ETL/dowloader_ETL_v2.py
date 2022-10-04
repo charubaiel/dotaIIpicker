@@ -1,4 +1,4 @@
-import sqlite3
+import duckdb
 from dagster import asset,repository,define_asset_job,sensor
 from dagster import MetadataValue,Output,RunRequest,DefaultSensorStatus
 import pandas as pd 
@@ -6,7 +6,6 @@ import requests as r
 import numpy as np
 from creds import (STEAM_API_KEY,
                     GET_MATCH_HISTORY_BY_SEQ_NUM)
-
 
 
 GENERAL_MATCH_COLUMNS = ['player_slot', 'team_number', 'team_slot', 'hero_id', 'item_0',
@@ -20,16 +19,19 @@ GENERAL_MATCH_COLUMNS = ['player_slot', 'team_number', 'team_slot', 'hero_id', '
     config_schema={"db_path": str},
     group_name='download')
 def load_last_step(context):
-    try:
-        with sqlite3.connect(context.op_config['db_path']) as c:
+
+    with duckdb.connect(context.op_config['db_path']) as c:
+        try:
             metadata_ = pd.read_sql('''select max(max_seq_num) as last_seq,
                                         max(start_time) as last_upd_date
-                                        from INTEL_matrix_table''',con=c)
+                                        from INTEL.matrix_table''',con=c)
+            
             LAST_SEQ_STEP = int(metadata_.loc[0,'last_seq'])
             last_upd = metadata_.loc[0,'last_upd_date']
-    except:
-        LAST_SEQ_STEP = int(5.6e+9)
-        last_upd = 0
+         
+        except:
+            LAST_SEQ_STEP = int(5.6e+9)
+            last_upd = 0
 
     return Output(LAST_SEQ_STEP, metadata={'last_updated_match_date':
                                             MetadataValue.text(str(last_upd))})
@@ -103,10 +105,12 @@ def optimize_data(context,prepare_data:pd.DataFrame)->pd.DataFrame:
     
     long_type_matrix = hero_matrix.melt(ignore_index=False).reset_index()
     long_type_matrix.columns = ['win_team','stats_type','lose_team','value']
-
-    return long_type_matrix.assign(
+    optimized_data = long_type_matrix.assign(
                                     start_time=prepare_data['start_time'].max(),
                                     max_seq_num = prepare_data['match_seq_num'].max())
+    optimized_data = optimized_data.loc[:,['start_time', 'win_team', 'stats_type', 'lose_team', 'value','max_seq_num']]
+    return optimized_data
+                            
 
 
 
@@ -126,32 +130,51 @@ def update_raw(context,prepare_data:pd.DataFrame):
         group_name='save')
 def update_optimized_base(context,optimize_data):
 
-    with sqlite3.connect(context.op_config['db_path']) as connect:
-        optimize_data.to_sql('INTEL_matrix_table',if_exists='append',index=False,con=connect)
+    connect =  duckdb.connect(context.op_config['db_path'])
+    # data in query reads directly from object optimize_data
 
-        reset_data = pd.read_sql('''select start_time,
-                                    win_team,
-                                    stats_type,
-                                    lose_team,
-                                    SUM(value) as value,
-                                    max(max_seq_num) as max_seq_num 
-                                    from INTEL_matrix_table
-                                    group by 1,2,3,4''',con=connect)
+    connect.execute(''' 
+                    CREATE SCHEMA IF NOT EXISTS INTEL;
+                    CREATE TABLE IF NOT EXISTS INTEL.matrix_table as select * from optimize_data TABLESAMPLE 0;
+                    INSERT INTO INTEL.matrix_table select * from optimize_data;
+                    ''')
 
-        reset_data.to_sql('INTEL_matrix_table',if_exists='replace',index=False,con=connect)
+    connect.execute('''
+                    CREATE OR REPLACE TABLE INTEL.matrix_table
+                    as 
+                        select
+                            start_time,
+                            win_team,
+                            stats_type,
+                            lose_team,
+                            SUM(value) as value,
+                            max(max_seq_num) as max_seq_num 
 
-        total_data = pd.read_sql('''select
-                                win_team,
-                                stats_type,
-                                lose_team,
-                                SUM(value) as stats
-                                from INTEL_matrix_table
-                                group by 1,2,3''',con=connect)
+                        from INTEL.matrix_table
+                        group by 1,2,3,4
+                ''')
+
+    total_data = connect.execute('''
+                                    select
+                                        win_team,
+                                        stats_type,
+                                        lose_team,
+                                        SUM(value) as stats
+                                    from INTEL.matrix_table
+                                    group by 1,2,3
+                                ''').df()
+    connect.close()
+
 
     return Output(value=None,
                 metadata = {
                             'MatrixFileSize':MetadataValue.float(total_data.memory_usage(deep=True).sum() / 1024**2),
+                            'Mean_matches':MetadataValue.float(total_data['stats'].where(lambda x: x!=0).mean()),
+                            'STD_matches':MetadataValue.float(total_data['stats'].where(lambda x: x!=0).std()),
                             'Min_matches':MetadataValue.float(total_data['stats'].where(lambda x: x!=0).min()),
+                            '25_quantile_matches':MetadataValue.float(total_data['stats'].where(lambda x: x!=0).quantile(.25)),
+                            'Median':MetadataValue.float(total_data['stats'].where(lambda x: x!=0).quantile(.5)),
+                            '75_quantile_matches':MetadataValue.float(total_data['stats'].where(lambda x: x!=0).quantile(.75)),
                             'Max_matches':MetadataValue.float(total_data['stats'].max()),
                             }
                 )
@@ -159,8 +182,8 @@ def update_optimized_base(context,optimize_data):
     
 update_matrix_data_job = define_asset_job(name='update_dota_matches',
                                         config={'ops':{"update_raw": {"config": {'file_path':'dbs/raw.h5'}},
-                                                        "update_optimized_base": {"config": {"db_path": 'dbs/dotaIIbase.db','file_path':'dbs/optimized_matrix.h5'}},
-                                                        "load_last_step": {"config": {"db_path": 'dbs/dotaIIbase.db'}},
+                                                        "update_optimized_base": {"config": {"db_path": 'dbs/dotaIIbase.duckdb','file_path':'dbs/optimized_matrix.h5'}},
+                                                        "load_last_step": {"config": {"db_path": 'dbs/dotaIIbase.duckdb'}},
                                                         "get_response": {"config": {"matches_requested": 100}}},
                                                 },
                                         tags={"dagster/max_retries": 3, "dagster/retry_strategy": "ALL_STEPS"})
