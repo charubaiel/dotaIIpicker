@@ -82,7 +82,7 @@ def prepare_data(context,get_response:dict)->pd.DataFrame:
                             ,axis=1
                             )
 
-
+    match_table['is_winner'] =  match_table['team_number'] != match_table['radiant_win']
     return match_table.set_index('match_id').apply(pd.to_numeric,errors='ignore',downcast='unsigned')
 
 
@@ -93,21 +93,22 @@ def prepare_data(context,get_response:dict)->pd.DataFrame:
         )
 def optimize_data(context,prepare_data:pd.DataFrame)->pd.DataFrame:
 
-
-    hero_matrix = prepare_data\
-    .groupby(['match_id','team_number','radiant_win'])\
-        .agg({'hero_id':set})\
-            .unstack(1)\
-                .droplevel(0,axis=1)\
-                    .explode([0,1])\
-                        .reset_index(1)\
-                            .pivot_table('radiant_win',0,1,aggfunc =['count','sum'])
+    filtred_errors_matches = prepare_data.reset_index().groupby(['match_id','is_winner'])['hero_id'].nunique().where(lambda x: x == 5).dropna().unstack().index
+    hero_matrix = prepare_data.loc[filtred_errors_matches]\
+                    .groupby(['match_id','team_number','radiant_win'])\
+                        .agg({'hero_id':set})\
+                            .unstack(1)\
+                                .droplevel(0,axis=1)\
+                                    .explode([0,1])\
+                                        .reset_index(1)\
+                                            .pivot_table('radiant_win',0,1,aggfunc =['count','sum'])
     
     long_type_matrix = hero_matrix.melt(ignore_index=False).reset_index()
     long_type_matrix.columns = ['win_team','stats_type','lose_team','value']
     optimized_data = long_type_matrix.assign(
                                     start_time=prepare_data['start_time'].max(),
                                     max_seq_num = prepare_data['match_seq_num'].max())
+
     optimized_data = optimized_data.loc[:,['start_time', 'win_team', 'stats_type', 'lose_team', 'value','max_seq_num']]
     return optimized_data
                             
